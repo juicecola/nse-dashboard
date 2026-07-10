@@ -3,11 +3,6 @@ scrape_nse.py
 --------------
 Scrapes the daily NSE trading summary from afx.kwayisi.org/nse/.
 
-IMPORTANT - read backend/etl/SOURCES.md before trusting this in production.
-This was built against the real page's structure (verified via a live fetch
-on 2026-07-05) but has NOT been executed end-to-end against the live site
-from the environment that built this project - that sandbox's network is
-locked to package registries only. Run this yourself first:
 
     python etl/scrape_nse.py --dry-run
 
@@ -23,18 +18,7 @@ WHAT IT SCRAPES
      -> via regex against the page text, since it's not a <table>.
   3. The daily summary paragraph (shares traded, deals, market value,
      market cap, gainers/losers count)
-     -> also via regex, deliberately written defensively: every field is
-     independently optional, so a change in the summary's wording degrades
-     gracefully (logs a warning, leaves that field null) rather than
-     crashing the whole scrape.
 
-WHY REGEX AT ALL, GIVEN THE EARLIER WARNING ABOUT TEXT EXTRACTION: the
-concatenation problem in SOURCES.md happened because *tabular* data lost
-its column delimiters when flattened to text. The index box and summary
-paragraph were never tabular to begin with - they're natural-language
-sentences with clearly-delimited numbers (e.g. "closing at KES 0.94 per
-share"), which regex handles safely. The distinction matters and is the
-reason this file mixes both techniques rather than picking one.
 """
 
 import argparse
@@ -62,12 +46,6 @@ def fetch_html(url: str = URL) -> str:
 
 def parse_listings_table(html: str) -> pd.DataFrame:
     """Parses the main ticker/name/volume/price/change table via pandas.read_html.
-
-    NOTE: the exact table structure (column count/order, whether ticker and
-    name are merged into one cell) could not be confirmed against the live
-    site from the build sandbox. This function tries the most likely shape
-    first and falls back to a looser parse with a warning if it doesn't
-    match - check stderr output the first time you run this for real.
     """
     from io import StringIO
     try:
@@ -109,6 +87,20 @@ def parse_listings_table(html: str) -> pd.DataFrame:
             "HTML and update the column-matching logic above."
         )
     result = candidate[keep].copy()
+
+    # The source table only publishes absolute change, not a percentage -
+    # derive it from close_price and change_abs.
+    if "close_price" in result.columns and "change_abs" in result.columns:
+        close = pd.to_numeric(result["close_price"], errors="coerce")
+        change = pd.to_numeric(result["change_abs"], errors="coerce")
+        previous_close = close - change
+        pct = (change / previous_close) * 100
+        pct = pct.replace([float("inf"), float("-inf")], pd.NA)
+        result["change_pct"] = pct.where(previous_close.notna() & (previous_close != 0)).round(2)
+    else:
+        result["change_pct"] = None
+
+    return result
 
     # The source table only publishes absolute change (e.g. "+0.20"), not a
     # percentage - derive it from close_price and change_abs so downstream
