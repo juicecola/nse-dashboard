@@ -1,0 +1,14 @@
+# NSE pipeline crontab (runs inside the Dockerized cron sidecar).
+#
+# 5 16 * * 1-5  = 16:05 Nairobi time (UTC+3), weekdays only.
+# Written as UTC below since the container's clock defaults to UTC -
+# 16:05 Nairobi = 13:05 UTC.
+#
+# This container shares the same image/dependencies as the backend service
+# and talks to Postgres directly over the Docker network - it does NOT need
+# docker exec (unlike scripts/run_pipeline.sh, which is for host-crontab use
+# and does need it, since it's calling INTO a container from outside Docker).
+
+5 13 * * 1-5 cd /app && python etl/scrape_nse.py && python etl/load_postgres.py && python etl/build_static_export.py && python etl/export_powerbi.py >> /var/log/nse_pipeline.log 2>&1
+
+# Blank line required at end of crontab file

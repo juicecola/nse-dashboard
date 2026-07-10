@@ -1,0 +1,25 @@
+# Dockerfile.cron
+# -----------------
+# Builds a cron sidecar that runs the same NSE pipeline scripts as the
+# backend service, on a schedule, entirely inside Docker - no host
+# crontab, no docker exec, no Airflow webserver/scheduler overhead.
+#
+# Uses cron in the foreground (-f) as PID 1, which is the standard way to
+# run cron as a container's main process.
+
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends cron \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY backend/ .
+COPY infra/cron/crontab /etc/cron.d/nse-pipeline
+RUN chmod 0644 /etc/cron.d/nse-pipeline \
+    && crontab /etc/cron.d/nse-pipeline \
+    && touch /var/log/nse_pipeline.log
+
+CMD ["cron", "-f", "-l", "2"]

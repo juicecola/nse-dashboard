@@ -1,0 +1,13 @@
+trade_date,ticker,name,close_price,change_pct,direction
+2025-12-31,NMG,Nation Media Group,12.70,9.96,gainer
+2025-12-31,CGEN,Car and General Kenya Limited,56.00,9.80,gainer
+2025-12-31,UCHM,Uchumi Supermarket Limited,1.13,9.71,gainer
+2025-12-31,SGL,Standard Group Limited,6.60,9.27,gainer
+2025-12-31,OCH,Olympia Capital Holdings Limited,8.72,6.08,gainer
+2025-12-31,UNGA,Unga Group Limited,24.50,5.60,gainer
+2025-12-31,EGAD,Eaagads Limited,18.50,-9.76,loser
+2025-12-31,SKL,Shri Krishana Overseas Ltd,7.60,-6.86,loser
+2025-12-31,KUKZ,Kakuzi Limited,390.00,-2.99,loser
+2025-12-31,BKG,BK Group Plc,41.45,-2.47,loser
+2025-12-31,SCAN,ScanGroup Limited,2.50,-1.96,loser
+2025-12-31,TOTL,Total Kenya Limited,38.00,-1.43,loser
