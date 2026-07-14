@@ -2,8 +2,8 @@ name: NSE Daily ETL
 
 on:
   schedule:
-    - cron: '0 13 * * 1-5'
-  workflow_dispatch: {}
+    - cron: '0 13 * * 1-5'  # 13:00 UTC = 16:00 Nairobi, weekdays
+  workflow_dispatch: {}       # lets you trigger it manually from the Actions tab
 
 permissions:
   contents: write
@@ -24,6 +24,15 @@ jobs:
 
       - name: Prefer IPv4 (workaround for GitHub Actions IPv6 routing issue)
         run: echo "precedence ::ffff:0:0/96  100" | sudo tee -a /etc/gai.conf
+
+      - name: Debug connectivity
+        run: |
+          echo "--- Can we reach the internet at all? ---"
+          curl -sS -o /dev/null -w "%{http_code}\n" --max-time 10 https://www.google.com || echo "FAILED"
+          echo "--- Can we reach the target site? ---"
+          curl -sS -o /dev/null -w "%{http_code}\n" --max-time 10 https://afx.kwayisi.org/nse/ || echo "FAILED"
+          echo "--- With a browser-like User-Agent? ---"
+          curl -sS -o /dev/null -w "%{http_code}\n" --max-time 10 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" https://afx.kwayisi.org/nse/ || echo "FAILED"
 
       - name: Scrape latest NSE data
         working-directory: backend

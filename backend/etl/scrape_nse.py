@@ -44,7 +44,7 @@ URL = "https://afx.kwayisi.org/nse/"
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (portfolio-project NSE dashboard scraper; contact: replace-with-your-email)"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
 
