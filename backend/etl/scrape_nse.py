@@ -29,6 +29,16 @@ from pathlib import Path
 
 import pandas as pd
 import requests
+import socket
+import urllib3.util.connection as urllib3_connection
+
+# Force IPv4 — GitHub Actions hosted runners have unreliable/absent IPv6
+# egress, and some target hosts return AAAA records that then fail to
+# connect with "Network is unreachable" even though an A record exists.
+def _allowed_gai_family():
+    return socket.AF_INET
+
+urllib3_connection.allowed_gai_family = _allowed_gai_family
 
 URL = "https://afx.kwayisi.org/nse/"
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
