@@ -16,7 +16,7 @@ export default function Ticker({
   }
 
   const items = [
-    { label: "NASI", value: `${index.close_value.toFixed(2)}` },
+    { label: "NASI", value: index.close_value != null ? index.close_value.toFixed(2) : "—" },
     { label: "CHANGE", value: `${(index.change_pct ?? 0) >= 0 ? "+" : ""}${index.change_pct?.toFixed(2) ?? "—"}%` },
     { label: "AS OF", value: summary.trade_date },
     { label: "GAINERS/LOSERS", value: `${summary.gainers_count ?? "—"}/${summary.losers_count ?? "—"}` },

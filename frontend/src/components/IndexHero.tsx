@@ -19,7 +19,9 @@ export default function IndexHero({ history }: { history: IndexPoint[] }) {
             NASI · NSE ALL-SHARE INDEX
           </div>
           <div className="flex items-baseline gap-3">
-            <span className="font-display text-5xl text-paper">{latest.close_value.toFixed(2)}</span>
+            <span className="font-display text-5xl text-paper">
++              {latest.close_value != null ? latest.close_value.toFixed(2) : "—"}
++           </span>
             {latest.change_pct !== null && (
               <span
                 className={`font-mono text-lg font-semibold ${isUp ? "text-gain" : "text-loss"}`}
