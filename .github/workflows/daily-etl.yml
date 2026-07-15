@@ -1,61 +1,69 @@
-name: NSE Daily ETL
+name: NSE daily pipeline
 
 on:
-  workflow_dispatch: {}       # lets you trigger it manually from the Actions tab
-
-permissions:
-  contents: write
+  schedule:
+    # 13:05 UTC = 16:05 Nairobi (UTC+3), weekdays only.
+    # GitHub Actions cron is UTC-only and best-effort (can be delayed
+    # several minutes under load, or occasionally skipped) - don't rely
+    # on this for anything requiring second-level precision.
+    - cron: "5 13 * * 1-5"
+  workflow_dispatch: {}   # lets you trigger a run manually from the Actions tab
 
 jobs:
-  run-etl:
+  run-pipeline:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    timeout-minutes: 15
 
-      - uses: actions/setup-python@v5
+    env:
+      POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+      POSTGRES_HOST: ${{ secrets.POSTGRES_HOST }}
+      POSTGRES_PORT: ${{ secrets.POSTGRES_PORT }}
+      POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+      POSTGRES_SSLMODE: require   # Render's external Postgres URL requires TLS
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
 
       - name: Install dependencies
         working-directory: backend
         run: pip install -r requirements.txt
 
-      - name: Prefer IPv4 (workaround for GitHub Actions IPv6 routing issue)
-        run: echo "precedence ::ffff:0:0/96  100" | sudo tee -a /etc/gai.conf
-
-      - name: Debug connectivity
-        run: |
-          echo "--- Can we reach the internet at all? ---"
-          curl -sS -o /dev/null -w "%{http_code}\n" --max-time 10 https://www.google.com || echo "FAILED"
-          echo "--- Can we reach the target site? ---"
-          curl -sS -o /dev/null -w "%{http_code}\n" --max-time 10 https://afx.kwayisi.org/nse/ || echo "FAILED"
-          echo "--- With a browser-like User-Agent? ---"
-          curl -sS -o /dev/null -w "%{http_code}\n" --max-time 10 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" https://afx.kwayisi.org/nse/ || echo "FAILED"
-
-      - name: Scrape latest NSE data
+      - name: Scrape NSE
         working-directory: backend
         run: python etl/scrape_nse.py
 
       - name: Load into Postgres
         working-directory: backend
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python etl/load_postgres.py
 
-      - name: Run data quality checks
-        working-directory: backend
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: python etl/data_quality_checks.py
-
-      - name: Rebuild static JSON fallback
+      - name: Export static JSON snapshot
         working-directory: backend
         run: python etl/build_static_export.py
 
-      - name: Commit refreshed static data
+      - name: Export Power BI CSVs
+        working-directory: backend
+        run: python etl/export_powerbi.py
+
+      # The two export steps above write files inside the checked-out repo
+      # (backend/app/static_data/*.json, powerbi/exports/*.csv), but that
+      # copy only exists on this disposable runner - it's gone the moment
+      # the job ends. Commit them back so the fallback JSON and CSVs stay
+      # current in the repo itself. Skip this step if you don't need the
+      # static fallback to track daily runs (e.g. your FastAPI deployment
+      # always has live Postgres access).
+      - name: Commit updated exports
         run: |
-          git config user.name "nse-etl-bot"
-          git config user.email "actions@github.com"
-          git add backend/app/static_data/ data/scraped/
-          git diff --staged --quiet || git commit -m "Daily NSE data refresh $(date +%F)"
+          git config user.name "nse-pipeline-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add backend/app/static_data powerbi/exports
+          git diff --cached --quiet && echo "No changes to commit" || git commit -m "Automated NSE data update $(date -u +%Y-%m-%d)"
           git push
