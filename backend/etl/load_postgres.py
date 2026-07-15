@@ -104,8 +104,24 @@ def load_market_index(session: Session) -> int:
         df = pd.read_csv(DATA_DIR / "nasi_index_seed.csv")
 
     rows = 0
+    skipped = 0
     for row in df.itertuples():
         trade_date = datetime.strptime(str(row.trade_date), "%Y-%m-%d").date()
+
+        if pd.isna(row.close_value):
+            # A NASI row with no close_value is unusable (unlike a missing
+            # change_pct, there's no sensible "None" to plot). Most likely
+            # cause: the scraper's regex parser failed to find the index
+            # value on the source page for this date. Skip and warn rather
+            # than inserting NaN, which Postgres accepts silently but which
+            # breaks JSON serialization downstream (Python's json module
+            # emits the bare token NaN, which is invalid JSON and makes
+            # JSON.parse() throw in the browser).
+            print(f"WARNING: skipping {row.index_name} row for {trade_date} - close_value is NaN "
+                  f"(scraper likely failed to parse the index value for this date)")
+            skipped += 1
+            continue
+
         session.query(FactMarketIndex).filter_by(index_name=row.index_name, trade_date=trade_date).delete()
         session.add(FactMarketIndex(
             index_name=row.index_name,
@@ -119,6 +135,8 @@ def load_market_index(session: Session) -> int:
         ))
         rows += 1
     session.commit()
+    if skipped:
+        print(f"Loaded {rows} market index rows ({skipped} skipped due to NaN close_value)")
     return rows
 
 
