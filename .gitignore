@@ -8,3 +8,4 @@ frontend/.env.local
 data/scraped/
 powerbi/exports/
 logs/
+backend/venv/
