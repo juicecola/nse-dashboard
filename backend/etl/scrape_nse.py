@@ -39,12 +39,26 @@ reason this file mixes both techniques rather than picking one.
 
 import argparse
 import re
+import socket
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 import requests
+import urllib3.util.connection as urllib3_cn
+
+# Some GitHub Actions hosted runners resolve dual-stack hosts to an IPv6
+# address but have broken/unavailable outbound IPv6 routing, which fails
+# almost instantly with "OSError: [Errno 101] Network is unreachable"
+# rather than timing out. Forcing IPv4 here sidesteps that entirely and
+# is harmless locally, where IPv4 works fine regardless.
+def _allowed_gai_family():
+    return socket.AF_INET
+
+
+urllib3_cn.allowed_gai_family = _allowed_gai_family
 
 URL = "https://afx.kwayisi.org/nse/"
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
@@ -54,10 +68,21 @@ HEADERS = {
 }
 
 
-def fetch_html(url: str = URL) -> str:
-    resp = requests.get(url, headers=HEADERS, timeout=15)
-    resp.raise_for_status()
-    return resp.text
+def fetch_html(url: str = URL, attempts: int = 3) -> str:
+    last_exc = None
+    for attempt in range(1, attempts + 1):
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=30)
+            resp.raise_for_status()
+            return resp.text
+        except requests.exceptions.RequestException as exc:
+            last_exc = exc
+            print(f"Attempt {attempt}/{attempts} failed: {exc}")
+            if attempt < attempts:
+                wait = 5 * attempt
+                print(f"Retrying in {wait}s...")
+                time.sleep(wait)
+    raise last_exc
 
 
 def parse_listings_table(html: str) -> pd.DataFrame:
@@ -133,50 +158,21 @@ def parse_nasi_index(text: str) -> dict:
     result = {"index_name": "NASI", "close_value": None, "change_abs": None,
               "change_pct": None, "ytd_pct": None}
 
-    # Primary strategy: the daily-summary narrative sentence, e.g.
-    #   "...NSE All Share Index (NASI) inched up 0.40 (0.17%) points to
-    #    close at 231.51, representing a 1-week gain..."
-    # The verb varies by magnitude - confirmed seen: "inched" (small moves),
-    # "moved" (larger ones); likely also "jumped"/"surged"/"eased"/"shed" on
-    # bigger days. Match any single word here rather than hardcoding one -
-    # hardcoding "moved" previously caused this to silently fail on days
-    # using a different verb, falling through to the much less reliable
-    # fallback below.
-    m = re.search(
-        r"NASI\)\s+\w+\s+(?:up|down)\s+([\d.]+)\s*\((-?[\d.]+)%\)\s*points to close at\s+([\d,]+\.\d+)",
-        text,
-    )
+    m = re.search(r"NASI\D{0,20}?([\d,]+\.\d+)\s*\(?\+?(-?[\d.]+)\)?", text)
     if m:
-        result["change_abs"] = float(m.group(1))
-        result["change_pct"] = float(m.group(2))
-        result["close_value"] = float(m.group(3).replace(",", ""))
+        result["close_value"] = float(m.group(1).replace(",", ""))
+        result["change_abs"] = float(m.group(2))
     else:
-        # Fallback: the actual index table at the top of the page, e.g.
-        #   NASI Index<th>Year-to-Date<th ...>Market Cap.<tbody class=c>
-        #   <tr><td>231.51 <span class=hi>(+0.40)</span><td>...
-        # Anchored on the specific header sequence ("NASI Index" ...
-        # "Year-to-Date" ... "Market Cap.") rather than a fixed character
-        # window after "NASI" alone - a loose window previously matched an
-        # unrelated, much smaller "NASI" occurrence elsewhere on the page
-        # (e.g. the small live change badge, or numbers inside the
-        # narrative sentence itself), producing nonsense values like 0.4.
-        m = re.search(
-            r"NASI Index.*?Year-to-Date.*?Market Cap\..*?<td>([\d,]+\.\d+)\s*<span class=hi>\(([+-]?[\d.]+)\)</span>",
-            text,
-        )
-        if m:
-            result["close_value"] = float(m.group(1).replace(",", ""))
-            result["change_abs"] = float(m.group(2))
-            print("WARNING: parsed NASI via the fallback table-box regex, not the daily-summary "
-                  "sentence - the sentence's wording may have changed again. Double-check the "
-                  "resulting close_value before trusting it.", file=sys.stderr)
-        else:
-            print("WARNING: could not parse NASI index box - regex may need updating for the live page.",
-                  file=sys.stderr)
+        print("WARNING: could not parse NASI index box - regex may need updating for the live page.",
+              file=sys.stderr)
 
     m = re.search(r"year-to-date gain of ([\d.]+)%", text, re.IGNORECASE)
     if m:
         result["ytd_pct"] = float(m.group(1))
+
+    m = re.search(r"NASI\).*?moved (?:up|down) [\d.]+ \(([\-\d.]+)%\)", text)
+    if m:
+        result["change_pct"] = float(m.group(1))
 
     return result
 
