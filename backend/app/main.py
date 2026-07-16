@@ -1,11 +1,13 @@
 import json
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.db.session import engine
+from app.cache import ttl_cache, clear_all_caches
 
 STATIC_DIR = Path(__file__).resolve().parent / "static_data"
 
@@ -22,6 +24,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Without this, an unhandled exception (e.g. a missing table) produces a
+# 500 with no CORS headers - the browser reports that as a CORS failure
+# instead of showing the real error, since the default error response is
+# generated outside the CORS middleware layer. Registering a handler here
+# keeps the response inside that layer, so the actual error reaches the
+# browser console instead of being masked.
+@app.exception_handler(Exception)
+def unhandled_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 
 def _db_available() -> bool:
@@ -41,12 +54,18 @@ def _load_static(name: str):
         return json.load(f)
 
 
+@app.get("/")
+def root():
+    return {"service": "NSE Kenya Market Dashboard API", "docs": "/docs", "health": "/api/health"}
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok", "postgres": _db_available()}
 
 
 @app.get("/api/stocks")
+@ttl_cache()
 def stocks():
     """Latest daily price row per ticker (whatever the most recent load covers)."""
     if _db_available():
@@ -87,6 +106,7 @@ def stock_detail(ticker: str):
 
 
 @app.get("/api/index/history")
+@ttl_cache()
 def index_history():
     """NASI index time series - sparse until the scraper has run for a while."""
     if _db_available():
@@ -101,6 +121,7 @@ def index_history():
 
 
 @app.get("/api/market/summary")
+@ttl_cache()
 def market_summary():
     """Latest end-of-day market-wide summary (shares traded, deals, market cap, gainers/losers)."""
     if _db_available():
@@ -121,6 +142,17 @@ def gainers_losers():
     gainers = sorted([s for s in all_stocks if s["change_pct"] > 0], key=lambda s: s["change_pct"], reverse=True)
     losers = sorted([s for s in all_stocks if s["change_pct"] < 0], key=lambda s: s["change_pct"])
     return {"gainers": gainers, "losers": losers}
+
+
+@app.post("/api/cache/clear")
+def clear_cache():
+    """
+    Manually evicts all cached endpoint responses. Call this from the
+    GitHub Actions pipeline right after a successful load, so the dashboard
+    reflects new data immediately instead of waiting out the TTL.
+    """
+    clear_all_caches()
+    return {"status": "cache cleared"}
 
 
 @app.get("/api/etl/run-log")
