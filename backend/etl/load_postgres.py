@@ -1,200 +1,249 @@
 """
-load_postgres.py
------------------
-Loads NSE data into Postgres. Two data sources, handled differently:
+scrape_nse.py
+--------------
+Scrapes the daily NSE trading summary from afx.kwayisi.org/nse/.
 
-  1. dim_ticker - loaded once from the static seed (data/dim_ticker.csv),
-     since the ticker/name/sector mapping doesn't change often.
+IMPORTANT - read backend/etl/SOURCES.md before trusting this in production.
+This was built against the real page's structure (verified via a live fetch
+on 2026-07-05) but has NOT been executed end-to-end against the live site
+from the environment that built this project - that sandbox's network is
+locked to package registries only. Run this yourself first:
 
-  2. fact_daily_price / fact_market_index / fact_market_summary - loaded
-     from whatever the scraper most recently wrote to data/scraped/. If
-     that directory is empty (i.e. you haven't run scrape_nse.py for real
-     yet), falls back to the seed snapshots (data/nasi_index_seed.csv,
-     data/nse_gainers_losers_seed.csv, data/nse_daily_summary_seed.csv) so
-     the pipeline is runnable immediately after unzipping, before you've
-     set up live scraping.
+    python etl/scrape_nse.py --dry-run
 
-This is intentionally idempotent per trade_date: re-running for a date
-that's already loaded replaces that date's rows rather than duplicating.
+...and inspect the output before wiring it into Airflow.
+
+WHAT IT SCRAPES
+  1. The main listings table: ticker, name, volume, price, change
+     -> via pandas.read_html(), which parses real <table> cell boundaries.
+     This sidesteps the column-concatenation problem you get from naive
+     text extraction (see SOURCES.md for a worked example of why that
+     matters).
+  2. The NASI index box (index value, day change, YTD change)
+     -> via regex against the page text, since it's not a <table>.
+  3. The daily summary paragraph (shares traded, deals, market value,
+     market cap, gainers/losers count)
+     -> also via regex, deliberately written defensively: every field is
+     independently optional, so a change in the summary's wording degrades
+     gracefully (logs a warning, leaves that field null) rather than
+     crashing the whole scrape.
+
+WHY REGEX AT ALL, GIVEN THE EARLIER WARNING ABOUT TEXT EXTRACTION: the
+concatenation problem in SOURCES.md happened because *tabular* data lost
+its column delimiters when flattened to text. The index box and summary
+paragraph were never tabular to begin with - they're natural-language
+sentences with clearly-delimited numbers (e.g. "closing at KES 0.94 per
+share"), which regex handles safely. The distinction matters and is the
+reason this file mixes both techniques rather than picking one.
 """
 
+import argparse
+import re
 import sys
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
-from sqlalchemy.orm import Session
+import requests
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app.db.models import Base, DimTicker, FactDailyPrice, FactMarketIndex, FactMarketSummary, ETLRunLog
-from app.db.session import engine, SessionLocal
-
+URL = "https://afx.kwayisi.org/nse/"
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
-SCRAPED_DIR = DATA_DIR / "scraped"
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (portfolio-project NSE dashboard scraper; contact: replace-with-your-email)"
+}
 
 
-def load_dim_ticker(session: Session) -> dict:
-    df = pd.read_csv(DATA_DIR / "dim_ticker.csv")
-    name_to_id = {}
-    for row in df.itertuples():
-        existing = session.query(DimTicker).filter_by(ticker=row.ticker).first()
-        if existing:
-            existing.name = row.name
-            existing.sector_approx = row.sector_approx
-            name_to_id[row.ticker] = existing.ticker_id
-        else:
-            rec = DimTicker(ticker=row.ticker, name=row.name, sector_approx=row.sector_approx)
-            session.add(rec)
-            session.flush()
-            name_to_id[row.ticker] = rec.ticker_id
-    session.commit()
-    return name_to_id
+def fetch_html(url: str = URL) -> str:
+    resp = requests.get(url, headers=HEADERS, timeout=15)
+    resp.raise_for_status()
+    return resp.text
 
 
-def _latest_scraped_file(prefix: str) -> Path | None:
-    if not SCRAPED_DIR.exists():
-        return None
-    matches = sorted(SCRAPED_DIR.glob(f"{prefix}_*.csv"), reverse=True)
-    return matches[0] if matches else None
+def parse_listings_table(html: str) -> pd.DataFrame:
+    """Parses the main ticker/name/volume/price/change table via pandas.read_html.
 
-
-def load_daily_prices(session: Session, ticker_map: dict) -> int:
-    listings_file = _latest_scraped_file("listings")
-    if listings_file:
-        df = pd.read_csv(listings_file)
-        trade_date = datetime.strptime(listings_file.stem.split("_", 1)[1], "%Y-%m-%d").date()
-        source = f"scraped: {listings_file.name}"
-    else:
-        # Fall back to the gainers/losers seed - it's real data, just partial
-        # (only the 12 tickers that appeared in the sidebar, not all 67).
-        df = pd.read_csv(DATA_DIR / "nse_gainers_losers_seed.csv")
-        df = df.rename(columns={"close_price": "close_price"})
-        trade_date = datetime.strptime(str(df["trade_date"].iloc[0]), "%Y-%m-%d").date()
-        source = "seed: nse_gainers_losers_seed.csv (partial - 12 tickers only)"
-
-    session.query(FactDailyPrice).filter_by(trade_date=trade_date).delete()
-    rows = 0
-    for row in df.itertuples():
-        if row.ticker not in ticker_map:
-            continue  # unmapped ticker - shouldn't happen if dim_ticker.csv is kept in sync
-        volume = getattr(row, "volume", None)
-        price = getattr(row, "close_price", None)
-        change_abs = getattr(row, "change_abs", None) if hasattr(row, "change_abs") else None
-        change_pct = getattr(row, "change_pct", None) if hasattr(row, "change_pct") else None
-
-        session.add(FactDailyPrice(
-            ticker_id=ticker_map[row.ticker],
-            trade_date=trade_date,
-            volume=None if pd.isna(volume) else int(volume),
-            close_price=None if pd.isna(price) else float(price),
-            change_abs=None if pd.isna(change_abs) else float(change_abs),
-            change_pct=None if pd.isna(change_pct) else float(change_pct),
-        ))
-        rows += 1
-    session.commit()
-    print(f"Loaded {rows} daily price rows for {trade_date} (source: {source})")
-    return rows
-
-
-def load_market_index(session: Session) -> int:
-    index_file = _latest_scraped_file("nasi")
-    if index_file:
-        df = pd.read_csv(index_file)
-    else:
-        df = pd.read_csv(DATA_DIR / "nasi_index_seed.csv")
-
-    rows = 0
-    skipped = 0
-    for row in df.itertuples():
-        trade_date = datetime.strptime(str(row.trade_date), "%Y-%m-%d").date()
-
-        if pd.isna(row.close_value):
-            # A NASI row with no close_value is unusable (unlike a missing
-            # change_pct, there's no sensible "None" to plot). Most likely
-            # cause: the scraper's regex parser failed to find the index
-            # value on the source page for this date. Skip and warn rather
-            # than inserting NaN, which Postgres accepts silently but which
-            # breaks JSON serialization downstream (Python's json module
-            # emits the bare token NaN, which is invalid JSON and makes
-            # JSON.parse() throw in the browser).
-            print(f"WARNING: skipping {row.index_name} row for {trade_date} - close_value is NaN "
-                  f"(scraper likely failed to parse the index value for this date)")
-            skipped += 1
-            continue
-
-        session.query(FactMarketIndex).filter_by(index_name=row.index_name, trade_date=trade_date).delete()
-        session.add(FactMarketIndex(
-            index_name=row.index_name,
-            trade_date=trade_date,
-            close_value=float(row.close_value),
-            change_abs=None if pd.isna(getattr(row, "change_abs", None)) else float(row.change_abs),
-            change_pct=None if pd.isna(getattr(row, "change_pct", None)) else float(row.change_pct),
-            ytd_pct=None if pd.isna(getattr(row, "ytd_pct", None)) else float(row.ytd_pct),
-            source_url=getattr(row, "source_url", None),
-            source_note=getattr(row, "source_note", None),
-        ))
-        rows += 1
-    session.commit()
-    if skipped:
-        print(f"Loaded {rows} market index rows ({skipped} skipped due to NaN close_value)")
-    return rows
-
-
-def load_market_summary(session: Session) -> int:
-    summary_file = _latest_scraped_file("summary")
-    if summary_file:
-        df = pd.read_csv(summary_file)
-    else:
-        df = pd.read_csv(DATA_DIR / "nse_daily_summary_seed.csv")
-
-    rows = 0
-    for row in df.itertuples():
-        trade_date = datetime.strptime(str(row.trade_date), "%Y-%m-%d").date()
-        session.query(FactMarketSummary).filter_by(trade_date=trade_date).delete()
-        session.add(FactMarketSummary(
-            trade_date=trade_date,
-            total_shares_traded=int(row.total_shares_traded) if not pd.isna(getattr(row, "total_shares_traded", None)) else None,
-            total_deals=int(row.total_deals) if not pd.isna(getattr(row, "total_deals", None)) else None,
-            market_value_kes=float(row.market_value_kes) if not pd.isna(getattr(row, "market_value_kes", None)) else None,
-            market_cap_kes=float(row.market_cap_kes) if not pd.isna(getattr(row, "market_cap_kes", None)) else None,
-            gainers_count=int(row.gainers_count) if not pd.isna(getattr(row, "gainers_count", None)) else None,
-            losers_count=int(row.losers_count) if not pd.isna(getattr(row, "losers_count", None)) else None,
-            listed_companies_traded=int(row.listed_companies_traded) if not pd.isna(getattr(row, "listed_companies_traded", None)) else None,
-            source_url=getattr(row, "source_url", None),
-        ))
-        rows += 1
-    session.commit()
-    return rows
-
-
-def log_run(session: Session, task_name: str, rows: int, status: str, detail: str = ""):
-    session.add(ETLRunLog(run_date=date.today(), task_name=task_name, rows_loaded=rows, status=status, detail=detail))
-    session.commit()
-
-
-def run():
-    Base.metadata.create_all(engine)
-    session = SessionLocal()
+    NOTE: the exact table structure (column count/order, whether ticker and
+    name are merged into one cell) could not be confirmed against the live
+    site from the build sandbox. This function tries the most likely shape
+    first and falls back to a looser parse with a warning if it doesn't
+    match - check stderr output the first time you run this for real.
+    """
+    from io import StringIO
     try:
-        ticker_map = load_dim_ticker(session)
-        log_run(session, "load_dim_ticker", len(ticker_map), "success")
+        tables = pd.read_html(StringIO(html))
+    except ValueError as e:
+        raise RuntimeError(f"No parsable <table> found on the page - site structure may have changed: {e}")
 
-        n = load_daily_prices(session, ticker_map)
-        log_run(session, "load_daily_prices", n, "success")
+    # Heuristic: the listings table is the largest one on the page (67 rows).
+    candidate = max(tables, key=len)
 
-        n = load_market_index(session)
-        log_run(session, "load_market_index", n, "success")
+    if len(candidate) < 40:
+        print(f"WARNING: largest table on the page only has {len(candidate)} rows; "
+              f"expected ~67 listed securities. Site structure may have changed - "
+              f"inspect the raw HTML before trusting this output.", file=sys.stderr)
 
-        n = load_market_summary(session)
-        log_run(session, "load_market_summary", n, "success")
+    # Best-effort column normalization - real column headers may differ from
+    # this guess; adjust after your first real run.
+    candidate.columns = [str(c).strip().lower() for c in candidate.columns]
+    rename_map = {}
+    for col in candidate.columns:
+        if "ticker" in col or col == "symbol":
+            rename_map[col] = "ticker"
+        elif "name" in col or "company" in col:
+            rename_map[col] = "name"
+        elif "vol" in col:
+            rename_map[col] = "volume"
+        elif "price" in col or "close" in col or "last" in col:
+            rename_map[col] = "close_price"
+        elif "change" in col or "chg" in col:
+            rename_map[col] = "change_abs"
+    candidate = candidate.rename(columns=rename_map)
 
-        print("Postgres load complete.")
-    except Exception as e:
-        log_run(session, "load_postgres", 0, "failed", str(e))
-        raise
-    finally:
-        session.close()
+    keep = [c for c in ["ticker", "name", "volume", "close_price", "change_abs"] if c in candidate.columns]
+    if "ticker" not in keep:
+        raise RuntimeError(
+            "Could not find a 'ticker' column after normalization. "
+            f"Columns found: {list(candidate.columns)}. The site's table structure "
+            "has likely changed since this scraper was written - inspect the raw "
+            "HTML and update the column-matching logic above."
+        )
+    result = candidate[keep].copy()
+
+    # The source table only publishes absolute change (e.g. "+0.20"), not a
+    # percentage - derive it from close_price and change_abs so downstream
+    # consumers (gainers/losers ranking, the frontend) have both. Guarded
+    # against previous_close being zero/NaN (illiquid or newly-listed
+    # counters can have odd values here).
+    if "close_price" in result.columns and "change_abs" in result.columns:
+        close = pd.to_numeric(result["close_price"], errors="coerce")
+        change = pd.to_numeric(result["change_abs"], errors="coerce")
+        previous_close = close - change
+        pct = (change / previous_close) * 100
+        pct = pct.replace([float("inf"), float("-inf")], pd.NA)
+        result["change_pct"] = pct.where(previous_close.notna() & (previous_close != 0)).round(2)
+    else:
+        result["change_pct"] = None
+
+    return result
+
+
+def parse_nasi_index(text: str) -> dict:
+    """Extracts the NASI index box: current value, absolute change, YTD %."""
+    result = {"index_name": "NASI", "close_value": None, "change_abs": None,
+              "change_pct": None, "ytd_pct": None}
+
+    # Primary strategy: the daily-summary narrative sentence, e.g.
+    #   "...NSE All Share Index (NASI) inched up 0.40 (0.17%) points to
+    #    close at 231.51, representing a 1-week gain..."
+    # The verb varies by magnitude - confirmed seen: "inched" (small moves),
+    # "moved" (larger ones); likely also "jumped"/"surged"/"eased"/"shed" on
+    # bigger days. Match any single word here rather than hardcoding one -
+    # hardcoding "moved" previously caused this to silently fail on days
+    # using a different verb, falling through to the much less reliable
+    # fallback below.
+    m = re.search(
+        r"NASI\)\s+\w+\s+(?:up|down)\s+([\d.]+)\s*\((-?[\d.]+)%\)\s*points to close at\s+([\d,]+\.\d+)",
+        text,
+    )
+    if m:
+        result["change_abs"] = float(m.group(1))
+        result["change_pct"] = float(m.group(2))
+        result["close_value"] = float(m.group(3).replace(",", ""))
+    else:
+        # Fallback: the actual index table at the top of the page, e.g.
+        #   NASI Index<th>Year-to-Date<th ...>Market Cap.<tbody class=c>
+        #   <tr><td>231.51 <span class=hi>(+0.40)</span><td>...
+        # Anchored on the specific header sequence ("NASI Index" ...
+        # "Year-to-Date" ... "Market Cap.") rather than a fixed character
+        # window after "NASI" alone - a loose window previously matched an
+        # unrelated, much smaller "NASI" occurrence elsewhere on the page
+        # (e.g. the small live change badge, or numbers inside the
+        # narrative sentence itself), producing nonsense values like 0.4.
+        m = re.search(
+            r"NASI Index.*?Year-to-Date.*?Market Cap\..*?<td>([\d,]+\.\d+)\s*<span class=hi>\(([+-]?[\d.]+)\)</span>",
+            text,
+        )
+        if m:
+            result["close_value"] = float(m.group(1).replace(",", ""))
+            result["change_abs"] = float(m.group(2))
+            print("WARNING: parsed NASI via the fallback table-box regex, not the daily-summary "
+                  "sentence - the sentence's wording may have changed again. Double-check the "
+                  "resulting close_value before trusting it.", file=sys.stderr)
+        else:
+            print("WARNING: could not parse NASI index box - regex may need updating for the live page.",
+                  file=sys.stderr)
+
+    m = re.search(r"year-to-date gain of ([\d.]+)%", text, re.IGNORECASE)
+    if m:
+        result["ytd_pct"] = float(m.group(1))
+
+    return result
+
+
+def parse_daily_summary(text: str) -> dict:
+    """Extracts the market-wide daily summary paragraph. Every field is
+    independently optional - a missing field logs a warning but doesn't
+    fail the whole scrape."""
+    result = {
+        "total_shares_traded": None, "total_deals": None, "market_value_kes": None,
+        "market_cap_kes": None, "gainers_count": None, "losers_count": None,
+        "listed_companies_traded": None,
+    }
+
+    m = re.search(r"total of ([\d,]+) shares in ([\d,]+) deals.*?KES ([\d,]+\.\d+)", text)
+    if m:
+        result["total_shares_traded"] = int(m.group(1).replace(",", ""))
+        result["total_deals"] = int(m.group(2).replace(",", ""))
+        result["market_value_kes"] = float(m.group(3).replace(",", ""))
+    else:
+        print("WARNING: could not parse shares/deals/market value sentence.", file=sys.stderr)
+
+    m = re.search(r"market capitalization.*?is KES ([\d.]+) trillion", text, re.IGNORECASE)
+    if m:
+        result["market_cap_kes"] = float(m.group(1)) * 1_000_000_000_000
+
+    m = re.search(r"(\d+) NSE listed equities participated.*?with (\d+) gainers and (\d+) losers", text)
+    if m:
+        result["listed_companies_traded"] = int(m.group(1))
+        result["gainers_count"] = int(m.group(2))
+        result["losers_count"] = int(m.group(3))
+    else:
+        print("WARNING: could not parse gainers/losers sentence.", file=sys.stderr)
+
+    return result
+
+
+def run(dry_run: bool = False):
+    print(f"Fetching {URL} ...")
+    html = fetch_html()
+    text = re.sub(r"\s+", " ", html)  # loose text version for regex passes
+
+    listings = parse_listings_table(html)
+    nasi = parse_nasi_index(text)
+    summary = parse_daily_summary(text)
+
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    if dry_run:
+        print("\n--- DRY RUN: nothing written ---")
+        print(f"Listings parsed: {len(listings)} rows")
+        print(listings.head(10))
+        print(f"\nNASI: {nasi}")
+        print(f"\nDaily summary: {summary}")
+        return
+
+    out_dir = DATA_DIR / "scraped"
+    out_dir.mkdir(exist_ok=True)
+    listings.to_csv(out_dir / f"listings_{today}.csv", index=False)
+    pd.DataFrame([{**nasi, "trade_date": today}]).to_csv(out_dir / f"nasi_{today}.csv", index=False)
+    pd.DataFrame([{**summary, "trade_date": today}]).to_csv(out_dir / f"summary_{today}.csv", index=False)
+    print(f"Wrote scraped data for {today} to {out_dir}")
 
 
 if __name__ == "__main__":
-    run()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dry-run", action="store_true",
+                         help="Print parsed output without writing files - run this first.")
+    args = parser.parse_args()
+    run(dry_run=args.dry_run)

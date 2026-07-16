@@ -1,4 +1,9 @@
 trade_date,index_name,close_value,change_abs,change_pct,ytd_pct,source_url,source_note
 2025-12-31,NASI,186.58,1.21,0.65,51.1,https://afx.kwayisi.org/nse/,"NSE trading summary for Wed Dec 31 2025, fetched from afx.kwayisi.org"
 2026-06-26,NASI,209.84,,-0.25,,https://www.mansamarkets.com/kenya,"Mansa Markets Kenya market summary, Fri Jun 26 2026 close (only pct change stated in source)"
+2026-07-01,NASI,224.70,,,,https://kingdomsecurities.co.ke/wp-content/uploads/2026/07/Daily-Market-Wrap-02-July-2026.pdf,"Previous-day close as stated in Kingdom Securities Daily Market Wrap for Thu Jul 2 2026 (no same-day abs/pct change reported for Jul 1 itself)"
+2026-07-02,NASI,225.98,1.28,0.57,,https://kingdomsecurities.co.ke/wp-content/uploads/2026/07/Daily-Market-Wrap-02-July-2026.pdf,"Kingdom Securities Daily Market Wrap, Thu Jul 2 2026 close"
 2026-07-03,NASI,227.17,1.19,0.53,21.75,https://afx.kwayisi.org/nse/,"NSE trading summary for Fri Jul 3 2026, fetched from afx.kwayisi.org"
+2026-07-06,NASI,228.17,1.00,0.44,,https://www.cnbcafrica.com/quotes?ticker=.NASI,"myStocks/CNBC Africa quote, Mon Jul 6 2026 close"
+2026-07-10,NASI,229.06,,,22.76,,"ESTIMATE, not directly sourced: derived from ytd_pct=22.76 (the only field the scraper's regex parsed correctly that day) applied to the confirmed 2025-12-31 base close of 186.58. close_value/change_abs/change_pct were NOT independently verified for this date - the scraper's close_value regex bug (see backend/etl/scrape_nse.py history) produced a nonsensical raw value (1.31) that was discarded."
+2026-07-16,NASI,231.55,,,24.08,,"ESTIMATE, not directly sourced: derived from ytd_pct=24.08 (the only field the scraper's regex parsed correctly that day) applied to the confirmed 2025-12-31 base close of 186.58. close_value/change_abs/change_pct were NOT independently verified for this date - the scraper's close_value regex bug (see backend/etl/scrape_nse.py history) produced a nonsensical raw value (0.4) that was discarded."
