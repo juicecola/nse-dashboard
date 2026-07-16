@@ -4,10 +4,12 @@ import MarketSummaryCards from "./components/MarketSummaryCards";
 import GainersLosersPanel from "./components/GainersLosersPanel";
 import StockTable from "./components/StockTable";
 import Methodology from "./components/Methodology";
+import LastUpdated from "./components/LastUpdated";
+import DashboardSkeleton from "./components/DashboardSkeleton";
 import { useDashboardData } from "./hooks/useDashboardData";
 
 export default function App() {
-  const { stocks, indexHistory, summary, gainersLosers, error } = useDashboardData();
+  const { stocks, indexHistory, summary, gainersLosers, loading, error } = useDashboardData();
 
   if (error) {
     return (
@@ -22,14 +24,21 @@ export default function App() {
     );
   }
 
+  if (loading) {
+    return <DashboardSkeleton />;
+  }
+
   return (
     <div className="min-h-screen flex flex-col">
       <Ticker summary={summary} index={indexHistory[indexHistory.length - 1] ?? null} />
 
       <header className="px-6 md:px-10 pt-10 pb-6 border-b border-line">
         <div className="max-w-6xl mx-auto">
-          <div className="text-[11px] tracking-[0.2em] text-gold font-mono mb-3">
-            NAIROBI SECURITIES EXCHANGE · MARKET DASHBOARD
+          <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+            <div className="text-[11px] tracking-[0.2em] text-gold font-mono">
+              NAIROBI SECURITIES EXCHANGE · MARKET DASHBOARD
+            </div>
+            <LastUpdated stocks={stocks} indexHistory={indexHistory} />
           </div>
           <h1 className="font-display text-4xl md:text-5xl text-paper leading-tight max-w-3xl">
             What did the NSE actually do today?
