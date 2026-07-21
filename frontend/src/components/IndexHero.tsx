@@ -20,8 +20,8 @@ export default function IndexHero({ history }: { history: IndexPoint[] }) {
           </div>
           <div className="flex items-baseline gap-3">
             <span className="font-display text-5xl text-paper">
-+              {latest.close_value != null ? latest.close_value.toFixed(2) : "—"}
-+           </span>
+              {latest.close_value != null ? latest.close_value.toFixed(2) : "—"}
+            </span>
             {latest.change_pct !== null && (
               <span
                 className={`font-mono text-lg font-semibold ${isUp ? "text-gain" : "text-loss"}`}
@@ -34,6 +34,28 @@ export default function IndexHero({ history }: { history: IndexPoint[] }) {
             <div className="text-muted text-sm font-mono mt-1">
               YTD {latest.ytd_pct >= 0 ? "+" : ""}
               {latest.ytd_pct}%
+            </div>
+          )}
+          {(latest.week_1_pct !== null || latest.week_4_pct !== null) && (
+            <div className="flex gap-4 text-muted text-xs font-mono mt-1">
+              {latest.week_1_pct !== null && (
+                <span>
+                  1W{" "}
+                  <span className={latest.week_1_pct >= 0 ? "text-gain" : "text-loss"}>
+                    {latest.week_1_pct >= 0 ? "+" : ""}
+                    {latest.week_1_pct}%
+                  </span>
+                </span>
+              )}
+              {latest.week_4_pct !== null && (
+                <span>
+                  4W{" "}
+                  <span className={latest.week_4_pct >= 0 ? "text-gain" : "text-loss"}>
+                    {latest.week_4_pct >= 0 ? "+" : ""}
+                    {latest.week_4_pct}%
+                  </span>
+                </span>
+              )}
             </div>
           )}
           <div className="text-muted text-xs font-mono mt-3">
