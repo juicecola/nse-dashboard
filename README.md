@@ -30,30 +30,6 @@ demonstrated.
 - A **"Methodology & data honesty"** panel in the app itself, disclosing
   exactly what's real scraped data vs. seed data, and why
 
-## The honest data story (read this before a demo or interview)
-
-There is no official free NSE API. This scrapes a public, community-run
-aggregator (`afx.kwayisi.org`). The 67-ticker name/sector mapping and the
-3-point NASI index history shipped in `data/` are real, dated numbers I
-pulled from a live fetch. The **full daily price/volume table for all ~67
-tickers is not pre-seeded** — the page's raw text concatenates table
-columns without reliable delimiters (e.g., is `"75" "6.00" "+5.00"` really
-volume 75 / price 6.00, or something else entirely?), and rather than guess
-and ship wrong numbers labeled as real, the pre-seeded stock data is
-limited to the 12 tickers that appeared unambiguously in the source's "Top
-Gainers / Bottom Losers" sidebar.
-
-**Run `python backend/etl/scrape_nse.py` against the live site to populate
-the rest** — the scraper reads actual HTML `<table>` cells, where column
-boundaries aren't ambiguous, so it gets all ~67 tickers correctly. It's
-validated against a local HTML fixture (`backend/etl/test_scrape_nse.py` —
-all 3 tests pass, including one bug the fixture caught: `pd.read_html()`
-needs its input wrapped in `io.StringIO()` or it misfires) but **not yet
-run against the live site itself**, since the environment used to build
-this had network access restricted to package registries only. That's the
-first thing to verify once you run it from your own machine.
-
-Full source-by-source citations: [`backend/etl/SOURCES.md`](backend/etl/SOURCES.md)
 
 ## Architecture
 
@@ -120,28 +96,7 @@ Frontend runs the same way as quick mode. `/api/health` should now show
 `"postgres": true` and `/api/stocks` should return close to 67 tickers
 instead of 12.
 
-## What I verified myself vs. what still needs your run
 
-**Verified, with a real Postgres instance and real data:**
-- The full Postgres schema loads correctly (`dim_ticker`, `fact_daily_price`,
-  `fact_market_index`, `fact_market_summary`, `etl_run_log`) — 67 tickers,
-  3-point NASI history, 12-ticker gainers/losers set, all confirmed with
-  direct SQL queries.
-- FastAPI serves correctly from Postgres (`"postgres": true`) and correctly
-  falls back to flat files when Postgres is unreachable — both paths tested.
-- The Power BI CSV export runs against live Postgres and produces correct
-  files.
-- The scraper's **parsing logic** passes against a local HTML fixture
-  (3/3 tests), including a real bug it caught and I fixed
-  (`pd.read_html()` + `StringIO`).
-
-**Not verified — needs a real run on your machine:**
-- The scraper against the *actual live site* (`afx.kwayisi.org`) — my
-  sandbox's network access doesn't reach it, only package registries.
-- The full `docker-compose up` orchestration end-to-end (no Docker daemon
-  in my sandbox) — the Postgres schema and load scripts are verified
-  against a real local Postgres instance, but the container networking
-  between Postgres/Airflow/backend hasn't been run by me.
 
 ## Scheduling: Airflow vs. cron
 
