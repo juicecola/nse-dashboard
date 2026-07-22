@@ -20,6 +20,8 @@ export interface IndexPoint {
   change_abs: number | null;
   change_pct: number | null;
   ytd_pct: number | null;
+  week_1_pct: number | null;
+  week_4_pct: number | null;
 }
 
 export interface MarketSummary {
