@@ -59,16 +59,10 @@ services:
 
   backend:
     build: ./backend
-    environment:
-      POSTGRES_USER: nse_dashboard
-      POSTGRES_PASSWORD: nse_dashboard
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: "5432"
-      POSTGRES_DB: nse_dashboard
+    env_file:
+      - backend/.env         
     ports:
       - "8000:8000"
-    depends_on:
-      - postgres
     volumes:
       - ./backend:/app
       - ./data:/data
